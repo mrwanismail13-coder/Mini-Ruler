@@ -1,83 +1,93 @@
-# modules/detector.py
 import cv2
 import numpy as np
+import os
+import sys
 from ultralytics import YOLO
 from typing import Dict, List
 
+
+def get_base_path():
+    """
+    بيحدد مكان تشغيل البرنامج سواء:
+    - تشغيل عادي (python)
+    - أو exe (PyInstaller)
+    """
+    if getattr(sys, 'frozen', False):
+        return sys._MEIPASS
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
 class TableDetector:
     def __init__(self, model_path: str = "models/best.pt"):
-        """
-        تحميل موديل YOLO11 المستهدف بدعم الـ CPU/GPU أوتوماتيكياً
-        """
-        self.model = YOLO(model_path)
-        # أسماء الكلاسات المتوقعة من التدريب في Roboflow
-        # 0: cue_ball, 1: object_ball, 2: pocket
-        self.class_names = {0: "cue_ball", 1: "object_ball", 2: "pockets"}
+
+        base_path = get_base_path()
+
+        # المسار الحقيقي للموديل بعد build
+        self.model_path = os.path.join(base_path, "models", "best.pt")
+
+        if not os.path.exists(self.model_path):
+            raise FileNotFoundError(f"YOLO model not found: {self.model_path}")
+
+        self.model = YOLO(self.model_path)
+
+        # mapping الكلاسات حسب تدريبك
+        self.class_names = {
+            0: "white_cue_ball",
+            1: "object_ball",
+            2: "pocket",
+            3: "cushion"
+        }
 
     def detect_elements(self, frame: np.ndarray, roi: Dict[str, int]) -> Dict[str, List]:
-        """
-        قص منطقة اللعب وتشغيل الـ Inference بعناية شديدة لتوفير الـ FPS
-        """
-        results_dict = {"cue_ball": [], "object_balls": [], "pockets": []}
-        
+
+        results_dict = {
+            "cue_ball": [],
+            "object_balls": [],
+            "pockets": [],
+            "cushions": []
+        }
+
         if frame is None:
             return results_dict
 
         h, w, _ = frame.shape
-        
-        # أخذ الأبعاد من الـ Config
-        top = max(0, roi["top"])
-        left = max(0, roi["left"])
-        width = min(w - left, roi["width"])
-        height = min(h - top, roi["height"])
-        
-        # قص منطقة الطاولة (ROI)
-        cropped_frame = frame[top:top+height, left:left+width]
-        
-        # تشغيل الموديل على المنطقة المقصوصة مع تفعيل الـ Conf الطفيف لضمان لقط الكور في الإضاءة الضعيفة
-        # verbose=False عشان نمنع زحمة اللوجات ونحافظ على سرعة المعالجة
-        results = self.model.predict(cropped_frame, conf=0.25, verbose=False)
-        
+
+        top = roi["top"]
+        left = roi["left"]
+        width = roi["width"]
+        height = roi["height"]
+
+        cropped = frame[top:top + height, left:left + width]
+
+        results = self.model.predict(cropped, conf=0.25, verbose=False)
+
         if not results:
             return results_dict
-            
+
         boxes = results[0].boxes
-        
+
         for box in boxes:
-            # جلب الإحداثيات بالنسبة للمستطيل المقصوص (Bounding Box)
+
             xyxy = box.xyxy[0].cpu().numpy()
             cls_id = int(box.cls[0].cpu().numpy())
             conf = float(box.conf[0].cpu().numpy())
-            
-            # حساب مركز الكورة أو الجيب بالظبط (X_center, Y_center)
-            x_center = (xyxy[0] + xyxy[2]) / 2.0
-            y_center = (xyxy[1] + xyxy[3]) / 2.0
-            
-            # تحويل الإحداثيات من المستطيل المقصوص إلى إحداثيات الشاشة الكاملة الحقيقية (Global Coordinates)
+
+            x_center = (xyxy[0] + xyxy[2]) / 2
+            y_center = (xyxy[1] + xyxy[3]) / 2
+
             global_x = int(x_center + left)
             global_y = int(y_center + top)
-            
-            # تصنيف العناصر بناءً على الـ Class ID المستخرج من الـ Weights
-            if cls_id == 0 or cls_id == 3: # الكورة البيضا (بعض الموديلات بتعتبرها كلاس منفصل)
+
+            if cls_id == 0:
                 results_dict["cue_ball"].append((global_x, global_y, conf))
-            elif cls_id == 1: # الكور الملونة المستهدفة
+
+            elif cls_id == 1:
                 results_dict["object_balls"].append((global_x, global_y, conf))
-            elif cls_id == 2: # الجيوب الستة
+
+            elif cls_id == 2:
                 results_dict["pockets"].append((global_x, global_y, conf))
 
-        # --- الـ Fallback الذكي ---
-        # لو الموديل ملقاش الكورة البيضا الحقيقية بسبب ترحيل الـ ROI، هنجبره يبص على الشاشة كاملة فوراً
-        if not results_dict["cue_ball"] and (roi["top"] != 0 or roi["left"] != 0):
-            full_results = self.model.predict(frame, conf=0.30, verbose=False)
-            if full_results:
-                for box in full_results[0].boxes:
-                    cls_id = int(box.cls[0].cpu().numpy())
-                    if cls_id == 0: # لقط الكورة البيضا على الشاشة الكبيرة
-                        xyxy = box.xyxy[0].cpu().numpy()
-                        gx = int((xyxy[0] + xyxy[2]) / 2.0)
-                        gy = int((xyxy[1] + xyxy[3]) / 2.0)
-                        conf = float(box.conf[0].cpu().numpy())
-                        results_dict["cue_ball"].append((gx, gy, conf))
-                        break # لقيناها خلاص قفل الحسبة
-                        
+            elif cls_id == 3:
+                results_dict["cushions"].append((global_x, global_y, conf))
+
         return results_dict

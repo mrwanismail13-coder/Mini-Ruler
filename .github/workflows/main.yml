@@ -2,58 +2,96 @@ name: 8BP Pro Tool CI/CD Pipeline
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches:
+      - main
+      - master
+
   pull_request:
-    branches: [ "main", "master" ]
+    branches:
+      - main
+      - master
 
 jobs:
   test_and_build:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout Repository Code
-      uses: actions/checkout@v3
+      - name: Checkout Repository Code
+        uses: actions/checkout@v4
 
-    - name: Set up Python 3.10
-      uses: actions/setup-python@v4
-      with:
-        python-version: "3.10"
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
 
-    - name: Install System Dependencies for OpenCV
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y libgl1 libglx-mesa0 libglib2.0-0
+      - name: Install System Dependencies for OpenCV
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1 libglx-mesa0 libglib2.0-0
 
-    - name: Install Python Requirements
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+      - name: Install Python Requirements
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-    - name: Verify YOLO Weights Existence
-      run: |
-        if [ ! -f "models/best.pt" ]; then
-          echo "Error: models/best.pt is missing!"
-          exit 1
-        fi
+      - name: Debug Repository Structure
+        run: |
+          echo "================================="
+          echo "CURRENT DIRECTORY"
+          echo "================================="
+          pwd
 
-    - name: Run Physics and Detection Automated Tests
-      run: |
-        python -m pytest test_physics.py || true
-        python test_detector.py || true
+          echo "================================="
+          echo "ROOT CONTENTS"
+          echo "================================="
+          ls -la
 
-    - name: Run Core Main Script Test
-      run: |
-        python main.py --ci || true
+          echo "================================="
+          echo "ALL FILES IN REPOSITORY"
+          echo "================================="
+          find . -type f | sort
 
-    - name: Run Debug Crop Tool
-      run: |
-        python debug_crop.py || true
+      - name: Verify Required Files
+        run: |
+          if [ ! -f "models/best.pt" ]; then
+            echo "ERROR: models/best.pt NOT FOUND"
+            exit 1
+          fi
 
-    - name: Upload Visual Validation Artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: visual-validation-results
-        path: |
-          *.png
-          *.jpg
-        retention-days: 5
+          if [ ! -f "test_screen.png" ]; then
+            echo "ERROR: test_screen.png NOT FOUND"
+            exit 1
+          fi
+
+          echo "All required files found."
+
+      - name: Run Physics Tests
+        run: |
+          pytest test_physics.py -v
+
+      - name: Run Detection Pipeline Test
+        run: |
+          pytest test_detector.py -v
+
+      - name: Run Debug Crop Validation
+        run: |
+          python debug_crop.py
+
+      - name: Verify Generated Output
+        run: |
+          if [ ! -f "result.png" ]; then
+            echo "ERROR: result.png was not generated"
+            exit 1
+          fi
+
+          echo "result.png generated successfully."
+
+      - name: Upload Visual Validation Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-validation-results
+          path: |
+            result.png
+            *.png
+            *.jpg
+          retention-days: 5

@@ -39,7 +39,7 @@ jobs:
 
     - name: Run Physics and Detection Automated Tests
       run: |
-        # تشغيل التستات بالبيئة العادية الحاضنة لكل المكتبات ومن غير سودو لمنع ضياع الـ PATH
+        # تشغيل التستات بالبيئة النظيفة بعد عزل مكتبات الإدخال تماماً عن لينكس
         python -m pytest test_physics.py || true
         python test_detector.py
 

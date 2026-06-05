@@ -8,11 +8,14 @@ from modules.detector import TableDetector
 from modules.physics_engine import PhysicsEngine
 from modules.drawer import ScreenDrawer
 from modules.controller import InputController
-from modules.hud_overlay import HUDOverlay
+
+from modules.white_ball_tracker import WhiteBallTracker
+from modules.hud_menu import HUDMenu
 
 
 class ProToolOrchestrator:
     def __init__(self, is_ci_environment: bool = False):
+
         self.is_ci = is_ci_environment
 
         # Core systems
@@ -20,62 +23,63 @@ class ProToolOrchestrator:
         self.physics = PhysicsEngine(TABLE_ROI, cushion_elasticity=0.85)
         self.drawer = ScreenDrawer()
         self.controller = InputController()
-        self.hud = HUDOverlay()
+
+        # NEW: stability + UI
+        self.tracker = WhiteBallTracker()
+        self.menu = HUDMenu()
 
         # State
-        self.current_pocket_index = 0
         self.locked_target = None
+        self.selected_pocket = 0
 
     # =========================
-    # MAIN PIPELINE
+    # FRAME PROCESSING
     # =========================
     def process_frame(self, frame: np.ndarray) -> np.ndarray:
 
         detections = self.detector.detect_elements(frame, TABLE_ROI)
 
-        cue_list = detections.get("cue_ball", [])
+        # -------------------------
+        # STABLE CUE BALL TRACKING
+        # -------------------------
+        cue = self.tracker.update(detections)
+
         object_balls = detections.get("object_balls", [])
         pockets = detections.get("pockets", [])
 
-        # لازم يكون فيه cue ball
-        if not cue_list:
-            return self.hud.draw_balls(frame, detections)
+        if cue is None or len(object_balls) == 0 or len(pockets) == 0:
+            frame = self.menu.draw(frame)
+            return frame
 
-        cue = (int(cue_list[0][0]), int(cue_list[0][1]))
+        cue = (int(cue[0]), int(cue[1]))
 
-        # =========================
-        # TARGET SELECTION (manual + auto)
-        # =========================
-        if object_balls:
-            if self.controller.is_key_pressed(HOTKEYS["TARGET_LOCK"]):
-                mouse = self.controller.get_mouse_position()
+        # -------------------------
+        # TARGET LOCK (Z KEY)
+        # -------------------------
+        if self.controller.is_key_pressed(HOTKEYS["TARGET_LOCK"]):
+            mouse = self.controller.get_mouse_position()
 
-                self.locked_target = min(
-                    object_balls,
-                    key=lambda b: np.hypot(b[0] - mouse[0], b[1] - mouse[1])
-                )
+            self.locked_target = min(
+                object_balls,
+                key=lambda b: np.hypot(b[0] - mouse[0], b[1] - mouse[1])
+            )
 
-        target = self.locked_target if self.locked_target else object_balls[0] if object_balls else None
-
-        if target is None or len(pockets) == 0:
-            return self.hud.draw_balls(frame, detections)
-
+        target = self.locked_target if self.locked_target else object_balls[0]
         target = (int(target[0]), int(target[1]))
 
-        # =========================
-        # POCKET SELECTION
-        # =========================
-        pocket_index = self.controller.get_active_pocket_by_hotkey()
-        if pocket_index:
-            self.current_pocket_index = pocket_index - 1
+        # -------------------------
+        # POCKET SELECTION (1-6)
+        # -------------------------
+        pocket_key = self.controller.get_active_pocket_by_hotkey()
+        if pocket_key:
+            self.selected_pocket = pocket_key - 1
 
-        pocket = pockets[self.current_pocket_index]
+        pocket = pockets[self.selected_pocket]
         pocket = (int(pocket[0]), int(pocket[1]))
 
-        # =========================
-        # PHYSICS CORE
-        # =========================
-
+        # -------------------------
+        # PHYSICS
+        # -------------------------
         dx = target[0] - pocket[0]
         dy = target[1] - pocket[1]
         dist = np.hypot(dx, dy)
@@ -83,61 +87,43 @@ class ProToolOrchestrator:
         if dist == 0:
             return frame
 
-        # Ghost ball calculation
         ghost_ball = (
             int(target[0] + (dx / dist) * (BALL_RADIUS * 2)),
             int(target[1] + (dy / dist) * (BALL_RADIUS * 2))
         )
 
-        # Cushion decision (simple heuristic)
-        cushion_side = "top" if target[1] < pocket[1] else "bottom"
-
         bounce = self.physics.calculate_reflection_point(
             start=cue,
             pocket=pocket,
-            cushion_side=cushion_side,
+            cushion_side="top" if target[1] < pocket[1] else "bottom",
             power_mode=POWER_MODES["MEDIUM"]
         )
 
         # =========================
-        # DRAWING SYSTEM (HUD STYLE)
+        # DRAW SYSTEM
         # =========================
 
         # balls + pockets
-        frame = self.hud.draw_balls(frame, detections)
+        frame = self.drawer.draw_detected_table(frame, detections)
 
-        # cue → target
-        frame = self.hud.draw_path(frame, [cue, target], "path")
-
-        # target → pocket
-        frame = self.hud.draw_path(frame, [target, pocket], "bank")
-
-        # bounce path
-        frame = self.hud.draw_path(frame, [cue, bounce], "combo")
+        # main paths
+        frame = self.drawer.draw_trajectory(frame, [cue, target], "cue_line", 2)
+        frame = self.drawer.draw_trajectory(frame, [target, pocket], "target_line", 2)
+        frame = self.drawer.draw_trajectory(frame, [cue, bounce], "combo_line", 2)
 
         # ghost ball
-        frame = self.hud.draw_ghost(frame, ghost_ball)
+        frame = self.drawer.draw_ghost_ball(frame, ghost_ball, BALL_RADIUS)
 
-        # multi-layer preview (optional future paths)
-        frame = self.hud.draw_multi_paths(frame, [
-            [cue, target, pocket],
-            [cue, bounce, pocket]
-        ])
-
-        # UI panel
-        frame = self.hud.draw_panel(
-            frame,
-            target,
-            self.current_pocket_index,
-            mode="MEDIUM"
-        )
+        # HUD menu
+        frame = self.menu.draw(frame)
 
         return frame
 
     # =========================
-    # CI TEST MODE
+    # STATIC TEST (CI)
     # =========================
     def run_static_test(self, input_path: str, output_path: str):
+
         frame = cv2.imread(input_path)
 
         if frame is None:
@@ -146,21 +132,24 @@ class ProToolOrchestrator:
         result = self.process_frame(frame)
 
         cv2.imwrite(output_path, result)
-        print(f"[OK] Output saved → {output_path}")
+        print(f"[OK] Saved → {output_path}")
 
     # =========================
-    # LIVE MODE
+    # LIVE MODE (SCREEN CAPTURE)
     # =========================
     def run_live(self):
-        import pyautogui
 
         if self.is_ci:
-            print("CI mode active - live disabled")
+            print("CI mode active")
             return
 
-        cv2.namedWindow("8BP AI HUD", cv2.WINDOW_NORMAL)
+        import pyautogui
+
+        cv2.namedWindow("8BP AI OVERLAY", cv2.WINDOW_NORMAL)
+        cv2.setWindowProperty("8BP AI OVERLAY", cv2.WND_PROP_TOPMOST, 1)
 
         while True:
+
             start = time.time()
 
             screenshot = pyautogui.screenshot()
@@ -169,10 +158,11 @@ class ProToolOrchestrator:
             output = self.process_frame(frame)
 
             fps = 1.0 / (time.time() - start)
+
             cv2.putText(output, f"FPS: {int(fps)}", (30, 40),
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
-            cv2.imshow("8BP AI HUD", output)
+            cv2.imshow("8BP AI OVERLAY", output)
 
             if cv2.waitKey(1) & 0xFF == 27:
                 break

@@ -2,33 +2,47 @@ name: Build 8BP Pro Tool EXE
 
 on:
   workflow_dispatch:
+  push:
+    branches: [ "main", "master" ]
 
 jobs:
   build:
     runs-on: windows-latest
 
     steps:
-    - name: Checkout Code
+    # ================= CHECKOUT =================
+    - name: Checkout Repository
       uses: actions/checkout@v3
 
+    # ================= PYTHON =================
     - name: Setup Python
       uses: actions/setup-python@v4
       with:
         python-version: "3.10"
 
+    # ================= INSTALL DEPENDENCIES =================
     - name: Install Dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         pip install pyinstaller
 
+    # ================= VERIFY MODEL =================
+    - name: Verify Model Exists
+      run: |
+        if (-Not (Test-Path "models/best.pt")) {
+          Write-Host "ERROR: models/best.pt is missing"
+          exit 1
+        }
+
+    # ================= BUILD EXE =================
     - name: Build EXE with PyInstaller
       run: |
-        pyinstaller --noconfirm --onefile --windowed main.py ^
-        --add-data "models/best.pt;models"
+        pyinstaller --noconfirm --onefile --windowed main.py --add-data "models/best.pt;models"
 
-    - name: Upload EXE Artifact
+    # ================= UPLOAD ARTIFACT =================
+    - name: Upload Build Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: 8BP-Pro-Tool
+        name: 8BP-Pro-Tool-EXE
         path: dist/*.exe

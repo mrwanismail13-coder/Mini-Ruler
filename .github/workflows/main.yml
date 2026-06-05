@@ -39,9 +39,9 @@ jobs:
 
     - name: Run Physics and Detection Automated Tests
       run: |
-        # تشغيل التستات باستخدام sudo عشان مكتبات الكيبورد والموس على الـ Linux لو لزم الأمر
-        sudo python -m pytest test_physics.py || true
-        sudo python test_detector.py
+        # تشغيل التستات بالبيئة العادية الحاضنة لكل المكتبات ومن غير سودو لمنع ضياع الـ PATH
+        python -m pytest test_physics.py || true
+        python test_detector.py
 
     - name: Upload Visual Test Result Artifact
       uses: actions/upload-artifact@v4

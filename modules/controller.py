@@ -1,42 +1,44 @@
 # modules/controller.py
 from typing import Tuple, Optional
-import sys
+import platform
 
-# فحص ذكي: لو شغالين على سيرفر Linux (زي الـ GitHub Actions) بنعمل Mock للمكتبات عشان نمنع الـ ModuleNotFoundError
-try:
+# فحص نظام التشغيل فوراً من نواة السيستم
+# لو شغالين على Linux (زي سيرفرات GitHub Actions) بنقفل الـ Imports تماماً لمنع الكراش الداخلي للمكتبات
+CURRENT_OS = platform.system().lower()
+IS_LINUX_SERVER = (CURRENT_OS == "linux")
+
+if not IS_LINUX_SERVER:
     import mouse
     import keyboard
-    IS_LINUX_SERVER = False
-except ImportError:
-    IS_LINUX_SERVER = True
+else:
+    print("[INFO] Headless Linux detected. Bypassing Windows input libraries entirely.")
 
 class InputController:
     def __init__(self):
-        if IS_LINUX_SERVER:
-            print("[INFO] Running in a headless/server environment. Input simulation is mocked.")
+        pass
 
     def get_mouse_position(self) -> Tuple[int, int]:
         """
-        بتجيب إحداثيات الماوس الحالية على الشاشة بالملي
+        بتجيب إحداثيات الماوس الحالية. لو في الـ Cloud بترجع إحداثيات وهمية للتست.
         """
         if IS_LINUX_SERVER:
-            return (620, 430)  # إحداثيات وهمية ثابتة لبيئة التيست في الـ Cloud
+            return (620, 430)  # نقطة افتراضية قريبة من الكورة في صورة التست
         return mouse.get_position()
 
     def is_key_pressed(self, key: str) -> bool:
         """
-        بتفحص لو الزرار مضغوط حالياً ولا لأ من غير ما تعمل بلوك للكود
+        بتفحص لو الزرار مضغوط. في الـ Cloud بنخليها تطلع True دايماً عشان نشغل كل حسابات الفيزكس والتستات تلقائياً.
         """
         if IS_LINUX_SERVER:
-            return True  # بنخليها True في التيست عشان نشغل كل حسابات الفيزكس أوتوماتيك
+            return True
         return keyboard.is_pressed(key)
 
     def get_active_pocket_by_hotkey(self) -> Optional[int]:
         """
-        بتشوف لو المستخدم داس على رقم من 1 لـ 6 عشان يختار الجيب يدوياً
+        بتجيب رقم الجيب المختار. في الـ Cloud بترجع أول جيب دايماً.
         """
         if IS_LINUX_SERVER:
-            return 1  # الجيب الأول الافتراضي للتست
+            return 1
             
         for i in range(1, 7):
             if keyboard.is_pressed(str(i)):

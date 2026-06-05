@@ -49,5 +49,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: visual-validation-results
-        path: '["result.png", "crop_test.png"]'
+        path: |
+          result.png
+          crop_test.png
         retention-days: 5

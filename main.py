@@ -3,32 +3,31 @@ import numpy as np
 import time
 import sys
 
-from config.settings import TABLE_ROI, PLAYABLE_CUSHIONS, BALL_RADIUS, HOTKEYS, POWER_MODES
+from config.settings import TABLE_ROI, BALL_RADIUS, HOTKEYS, POWER_MODES
 from modules.detector import TableDetector
 from modules.physics_engine import PhysicsEngine
 from modules.drawer import ScreenDrawer
 from modules.controller import InputController
+from modules.hud_overlay import HUDOverlay
 
 
 class ProToolOrchestrator:
     def __init__(self, is_ci_environment: bool = False):
-        """
-        CI MODE:
-        - يمنع أي input hardware
-        - يمنع pyautogui usage
-        """
         self.is_ci = is_ci_environment
 
-        self.detector = TableDetector(model_path="models/best.pt")
+        # Core systems
+        self.detector = TableDetector("models/best.pt")
         self.physics = PhysicsEngine(TABLE_ROI, cushion_elasticity=0.85)
         self.drawer = ScreenDrawer()
         self.controller = InputController()
+        self.hud = HUDOverlay()
 
+        # State
         self.current_pocket_index = 0
         self.locked_target = None
 
     # =========================
-    # FRAME PROCESSING CORE
+    # MAIN PIPELINE
     # =========================
     def process_frame(self, frame: np.ndarray) -> np.ndarray:
 
@@ -38,13 +37,14 @@ class ProToolOrchestrator:
         object_balls = detections.get("object_balls", [])
         pockets = detections.get("pockets", [])
 
+        # لازم يكون فيه cue ball
         if not cue_list:
-            return self.drawer.draw_detected_table(frame, detections)
+            return self.hud.draw_balls(frame, detections)
 
         cue = (int(cue_list[0][0]), int(cue_list[0][1]))
 
         # =========================
-        # TARGET SELECTION
+        # TARGET SELECTION (manual + auto)
         # =========================
         if object_balls:
             if self.controller.is_key_pressed(HOTKEYS["TARGET_LOCK"]):
@@ -55,13 +55,10 @@ class ProToolOrchestrator:
                     key=lambda b: np.hypot(b[0] - mouse[0], b[1] - mouse[1])
                 )
 
-        if self.locked_target:
-            target = self.locked_target
-        else:
-            target = object_balls[0] if object_balls else None
+        target = self.locked_target if self.locked_target else object_balls[0] if object_balls else None
 
         if target is None or len(pockets) == 0:
-            return self.drawer.draw_detected_table(frame, detections)
+            return self.hud.draw_balls(frame, detections)
 
         target = (int(target[0]), int(target[1]))
 
@@ -76,7 +73,7 @@ class ProToolOrchestrator:
         pocket = (int(pocket[0]), int(pocket[1]))
 
         # =========================
-        # PHYSICS INTEGRATION
+        # PHYSICS CORE
         # =========================
 
         dx = target[0] - pocket[0]
@@ -86,12 +83,13 @@ class ProToolOrchestrator:
         if dist == 0:
             return frame
 
+        # Ghost ball calculation
         ghost_ball = (
             int(target[0] + (dx / dist) * (BALL_RADIUS * 2)),
             int(target[1] + (dy / dist) * (BALL_RADIUS * 2))
         )
 
-        # اختيار بسيط للـ cushion
+        # Cushion decision (simple heuristic)
         cushion_side = "top" if target[1] < pocket[1] else "bottom"
 
         bounce = self.physics.calculate_reflection_point(
@@ -102,30 +100,53 @@ class ProToolOrchestrator:
         )
 
         # =========================
-        # DRAWING
+        # DRAWING SYSTEM (HUD STYLE)
         # =========================
 
-        frame = self.drawer.draw_trajectory(frame, [cue, target], "cue_line", 3)
-        frame = self.drawer.draw_trajectory(frame, [target, pocket], "target_line", 2)
-        frame = self.drawer.draw_trajectory(frame, [cue, bounce], "bounce_line", 2)
-        frame = self.drawer.draw_ghost_ball(frame, ghost_ball, BALL_RADIUS)
-        frame = self.drawer.draw_trajectory(frame, [bounce, pocket], "combo_line", 2)
+        # balls + pockets
+        frame = self.hud.draw_balls(frame, detections)
+
+        # cue → target
+        frame = self.hud.draw_path(frame, [cue, target], "path")
+
+        # target → pocket
+        frame = self.hud.draw_path(frame, [target, pocket], "bank")
+
+        # bounce path
+        frame = self.hud.draw_path(frame, [cue, bounce], "combo")
+
+        # ghost ball
+        frame = self.hud.draw_ghost(frame, ghost_ball)
+
+        # multi-layer preview (optional future paths)
+        frame = self.hud.draw_multi_paths(frame, [
+            [cue, target, pocket],
+            [cue, bounce, pocket]
+        ])
+
+        # UI panel
+        frame = self.hud.draw_panel(
+            frame,
+            target,
+            self.current_pocket_index,
+            mode="MEDIUM"
+        )
 
         return frame
 
     # =========================
-    # CI STATIC TEST MODE
+    # CI TEST MODE
     # =========================
     def run_static_test(self, input_path: str, output_path: str):
         frame = cv2.imread(input_path)
 
         if frame is None:
-            raise FileNotFoundError(f"Missing image: {input_path}")
+            raise FileNotFoundError(f"Missing file: {input_path}")
 
         result = self.process_frame(frame)
 
         cv2.imwrite(output_path, result)
-        print(f"Saved: {output_path}")
+        print(f"[OK] Output saved → {output_path}")
 
     # =========================
     # LIVE MODE
@@ -134,10 +155,10 @@ class ProToolOrchestrator:
         import pyautogui
 
         if self.is_ci:
-            print("CI mode - live disabled")
+            print("CI mode active - live disabled")
             return
 
-        cv2.namedWindow("8BP Pro Tool", cv2.WINDOW_NORMAL)
+        cv2.namedWindow("8BP AI HUD", cv2.WINDOW_NORMAL)
 
         while True:
             start = time.time()
@@ -151,7 +172,7 @@ class ProToolOrchestrator:
             cv2.putText(output, f"FPS: {int(fps)}", (30, 40),
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
-            cv2.imshow("8BP Pro Tool", output)
+            cv2.imshow("8BP AI HUD", output)
 
             if cv2.waitKey(1) & 0xFF == 27:
                 break
@@ -159,7 +180,11 @@ class ProToolOrchestrator:
         cv2.destroyAllWindows()
 
 
+# =========================
+# ENTRY POINT
+# =========================
 if __name__ == "__main__":
+
     if len(sys.argv) > 1 and sys.argv[1] == "--ci":
         ProToolOrchestrator(is_ci_environment=True).run_static_test(
             "test_screen.png",

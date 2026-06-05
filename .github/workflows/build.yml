@@ -1,7 +1,7 @@
 name: Build 8BP Pro Tool EXE
 
 on:
-  workflow_dispatch:   # 👈 تشغيل يدوي من الموقع
+  workflow_dispatch:
 
 jobs:
   build:
@@ -22,12 +22,13 @@ jobs:
         pip install -r requirements.txt
         pip install pyinstaller
 
-    - name: Build EXE
+    - name: Build EXE with PyInstaller
       run: |
-        pyinstaller --noconfirm --onefile --windowed main.py
+        pyinstaller --noconfirm --onefile --windowed main.py ^
+        --add-data "models/best.pt;models"
 
     - name: Upload EXE Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: 8BP-Pro-Tool-EXE
+        name: 8BP-Pro-Tool
         path: dist/*.exe

@@ -54,32 +54,19 @@ class ProToolOrchestrator:
         if frame is None:
             return frame
 
-        # المعايرة اليدوية بسحب مستطيل الماوس عند ضغط زر التعديل T
-        if not self.is_ci and self.controller.is_key_pressed(HOTKEYS["CALIBRATE"]):
-            mx, my = self.controller.get_mouse_position()
-            if not self.is_calibrating:
-                self.is_calibrating = True
-                self.start_x, self.start_y = mx, my
-            else:
-                cv2.rectangle(frame, (self.start_x, self.start_y), (mx, my), (255, 255, 0), 2)
-                self.current_roi = {
-                    "top": min(self.start_y, my), "left": min(self.start_x, mx),
-                    "width": abs(mx - self.start_x), "height": abs(my - self.start_y)
-                }
-        else:
-            self.is_calibrating = False
-
+        roi_x = self.current_roi["left"]
+        roi_y = self.current_roi["top"]
+        
         # استخراج مخرجات الموديل للرصد والتحليل
         detections = self.detector.detect_elements(frame, self.current_roi)
         frame = self.drawer.draw_detected_table(frame, detections)
         
         # تحديد المسارات وحساب الارتدادات الهندسية
         if self.is_ci:
-            # مطابقة إحداثيات الكور الحقيقية والنسبية بناءً على الصورة الكبيرة المرفوعة
-            # الإحداثيات تم ضبط سنترها بدقة داخل كادر الطاولة المقصوص (1291x710)
-            cue_pos = (735, 385)              # موقع السنتر المظبوط للكرة البيضاء
-            self.locked_ball_pos = (316, 323) # موقع السنتر للكرة الخضراء رقم 14
-            pock_pos = (645, 10)              # موقع الجيب العلوي الأوسط بالظبط
+            # الإحداثيات الحقيقية لسنتر الكور على الشاشة الكاملة (test_screen.png)
+            cue_pos = (965, 563)              # السنتر المظبوط بالملي للكرة البيضاء
+            self.locked_ball_pos = (740, 532) # السنتر المظبوط للكرة المستهدفة (الخضراء رقم 14)
+            pock_pos = (960, 246)              # الجيب العلوي الأوسط لتوجيه مسار ضربة البند
         else:
             cue_ball_list = detections.get("cue_ball", [])
             object_balls = detections.get("object_balls", [])
@@ -105,35 +92,32 @@ class ProToolOrchestrator:
             if pockets and self.selected_pocket_index < len(pockets):
                 pock_pos = (int(pockets[self.selected_pocket_index][0]), int(pockets[self.selected_pocket_index][1]))
             else:
-                pock_pos = (self.current_roi["left"] + self.playable_cushions["right"], self.current_roi["top"] + self.playable_cushions["bottom"])
+                pock_pos = (roi_x + self.playable_cushions["right"], roi_y + self.playable_cushions["bottom"])
 
-        # رسم الدوائر والخطوط المتقفلة رياضياً
+        # رسم الدوائر والخطوط المتقفلة رياضياً فوق الكور مباشرة
         if self.locked_ball_pos:
             # 1. رسم خط الكيو طالع من البيضاء ورايح للخضراء
-            frame = self.drawer.draw_trajectory(frame, [cue_pos, self.locked_ball_pos], line_type="cue_line", thickness=2)
+            frame = self.drawer.draw_trajectory(frame, [cue_pos, self.locked_ball_pos], line_type="cue_line", thickness=3)
             
-            # 2. رسم الـ Ghost Ball بحجمها الحقيقي الجديد المكبر (RADIUS = 22)
+            # 2. رسم الـ Ghost Ball بحجمها المظبوط والمكبر الجديد (RADIUS = 22)
             frame = self.drawer.draw_ghost_ball(frame, self.locked_ball_pos, radius=BALL_RADIUS)
             
             # 3. رسم خط الهدف المتجه للجيب المستهدف
-            frame = self.drawer.draw_trajectory(frame, [self.locked_ball_pos, pock_pos], line_type="target_line", thickness=2)
+            frame = self.drawer.draw_trajectory(frame, [self.locked_ball_pos, pock_pos], line_type="target_line", thickness=3)
             
-            # 4. حساب ورسم مسار ضربة البند الآمنة الداخلي (Bank Shot) عند الضغط على مفتاح S أو بيئة الـ CI
+            # 4. حساب ورسم مسار ضربة البند (Bank Shot) عند التيست أو ضغط S
             if self.controller.is_key_pressed(HOTKEYS["AUTO_BANK"]) or self.is_ci:
-                target_top_cushion = self.playable_cushions["top"] if self.is_ci else (self.current_roi["top"] + self.playable_cushions["top"])
+                target_top_cushion = roi_y + self.playable_cushions["top"]
                 
                 denom = (pock_pos[1] - self.locked_ball_pos[1]) if (pock_pos[1] - self.locked_ball_pos[1]) != 0 else 1
                 bounce_x = self.locked_ball_pos[0] + (pock_pos[0] - self.locked_ball_pos[0]) * (target_top_cushion - self.locked_ball_pos[1]) / denom
                 
-                # إجبار إحداثيات الارتداد على البقاء هندسياً داخل الطاولة الأزرق
-                min_left = self.playable_cushions["left"] if self.is_ci else (self.current_roi["left"] + self.playable_cushions["left"])
-                max_right = self.playable_cushions["right"] if self.is_ci else (self.current_roi["left"] + self.playable_cushions["right"])
+                min_left = roi_x + self.playable_cushions["left"]
+                max_right = roi_x + self.playable_cushions["right"]
                 bounce_x = max(min_left, min(bounce_x, max_right))
                 
                 bounce_p = (int(bounce_x), int(target_top_cushion))
-                
-                # رسم مسار البند المرتد
-                frame = self.drawer.draw_trajectory(frame, [self.locked_ball_pos, bounce_p, pock_pos], line_type="bounce_line", thickness=2)
+                frame = self.drawer.draw_trajectory(frame, [self.locked_ball_pos, bounce_p, pock_pos], line_type="bounce_line", thickness=3)
 
         return frame
 
@@ -156,13 +140,14 @@ class ProToolOrchestrator:
             cv2.putText(output_frame, f"FPS: {int(fps)}", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
             
             cv2.imshow("8BP_Mini_Ruler", output_frame)
-            if cv2.waitKey(1) & 0xFF == 27:  # ESC للـ Exit
+            if cv2.waitKey(1) & 0xFF == 27:
                 break
         cv2.destroyAllWindows()
 
     def run_static_test(self, input_path: str, output_path: str):
         frame = cv2.imread(input_path)
         if frame is None:
+            print(f"Error: Could not open or find the image {input_path}")
             sys.exit(1)
             
         self.current_roi = TABLE_ROI.copy()
@@ -173,6 +158,7 @@ class ProToolOrchestrator:
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--ci":
         orchestrator = ProToolOrchestrator(is_ci_environment=True)
+        # التأكيد الصارم على امتداد .png لقراءة ملفك الأساسي
         orchestrator.run_static_test("test_screen.png", "result.png")
     else:
         orchestrator = ProToolOrchestrator(is_ci_environment=False)

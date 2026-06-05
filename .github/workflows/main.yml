@@ -22,7 +22,6 @@ jobs:
     - name: Install System Dependencies for OpenCV (Fix for Ubuntu Noble 24.04)
       run: |
         sudo apt-get update
-        # تم استبدال libgl1-mesa-glx بالحزم المتوافقة مع النسخ الحديثة لمنع كراش exit code 100
         sudo apt-get install -y libgl1 libglx-mesa0 libglib2.0-0
 
     - name: Install Python Requirements
@@ -40,9 +39,9 @@ jobs:
 
     - name: Run Physics and Detection Automated Tests
       run: |
-        # تشغيل التستات للتأكد إن مفيش كراش في السيستم
-        python -m pytest test_physics.py || true
-        python test_detector.py
+        # تشغيل التستات باستخدام sudo عشان مكتبات الكيبورد والموس على الـ Linux لو لزم الأمر
+        sudo python -m pytest test_physics.py || true
+        sudo python test_detector.py
 
     - name: Upload Visual Test Result Artifact
       uses: actions/upload-artifact@v4

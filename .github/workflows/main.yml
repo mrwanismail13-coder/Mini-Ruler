@@ -19,10 +19,11 @@ jobs:
       with:
         python-version: "3.10"
 
-    - name: Install System Dependencies for OpenCV
+    - name: Install System Dependencies for OpenCV (Fix for Ubuntu Noble 24.04)
       run: |
         sudo apt-get update
-        sudo apt-get install -y libgl1-mesa-glx libglib2.0-0
+        # تم استبدال libgl1-mesa-glx بالحزم المتوافقة مع النسخ الحديثة لمنع كراش exit code 100
+        sudo apt-get install -y libgl1 libglx-mesa0 libglib2.0-0
 
     - name: Install Python Requirements
       run: |

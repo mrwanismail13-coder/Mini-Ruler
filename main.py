@@ -8,9 +8,9 @@ from modules.detector import TableDetector
 from modules.physics_engine import PhysicsEngine
 from modules.drawer import ScreenDrawer
 from modules.controller import InputController
-
 from modules.white_ball_tracker import WhiteBallTracker
 from modules.hud_menu import HUDMenu
+from modules.transparent_overlay import TransparentOverlay
 
 
 class ProToolOrchestrator:
@@ -18,30 +18,27 @@ class ProToolOrchestrator:
 
         self.is_ci = is_ci_environment
 
-        # Core systems
+        # ================= CORE =================
         self.detector = TableDetector("models/best.pt")
         self.physics = PhysicsEngine(TABLE_ROI, cushion_elasticity=0.85)
         self.drawer = ScreenDrawer()
         self.controller = InputController()
 
-        # NEW: stability + UI
+        # ================= AI HELPERS =================
         self.tracker = WhiteBallTracker()
         self.menu = HUDMenu()
+        self.overlay = TransparentOverlay()
 
-        # State
+        # ================= STATE =================
         self.locked_target = None
         self.selected_pocket = 0
 
-    # =========================
-    # FRAME PROCESSING
-    # =========================
+    # ================= FRAME PIPELINE =================
     def process_frame(self, frame: np.ndarray) -> np.ndarray:
 
         detections = self.detector.detect_elements(frame, TABLE_ROI)
 
-        # -------------------------
-        # STABLE CUE BALL TRACKING
-        # -------------------------
+        # 🎯 stable cue ball tracking
         cue = self.tracker.update(detections)
 
         object_balls = detections.get("object_balls", [])
@@ -53,9 +50,7 @@ class ProToolOrchestrator:
 
         cue = (int(cue[0]), int(cue[1]))
 
-        # -------------------------
-        # TARGET LOCK (Z KEY)
-        # -------------------------
+        # ================= TARGET LOCK =================
         if self.controller.is_key_pressed(HOTKEYS["TARGET_LOCK"]):
             mouse = self.controller.get_mouse_position()
 
@@ -67,9 +62,7 @@ class ProToolOrchestrator:
         target = self.locked_target if self.locked_target else object_balls[0]
         target = (int(target[0]), int(target[1]))
 
-        # -------------------------
-        # POCKET SELECTION (1-6)
-        # -------------------------
+        # ================= POCKET SELECT =================
         pocket_key = self.controller.get_active_pocket_by_hotkey()
         if pocket_key:
             self.selected_pocket = pocket_key - 1
@@ -77,9 +70,7 @@ class ProToolOrchestrator:
         pocket = pockets[self.selected_pocket]
         pocket = (int(pocket[0]), int(pocket[1]))
 
-        # -------------------------
-        # PHYSICS
-        # -------------------------
+        # ================= PHYSICS =================
         dx = target[0] - pocket[0]
         dy = target[1] - pocket[1]
         dist = np.hypot(dx, dy)
@@ -99,29 +90,21 @@ class ProToolOrchestrator:
             power_mode=POWER_MODES["MEDIUM"]
         )
 
-        # =========================
-        # DRAW SYSTEM
-        # =========================
+        # ================= RENDER =================
 
-        # balls + pockets
         frame = self.drawer.draw_detected_table(frame, detections)
 
-        # main paths
         frame = self.drawer.draw_trajectory(frame, [cue, target], "cue_line", 2)
         frame = self.drawer.draw_trajectory(frame, [target, pocket], "target_line", 2)
         frame = self.drawer.draw_trajectory(frame, [cue, bounce], "combo_line", 2)
 
-        # ghost ball
         frame = self.drawer.draw_ghost_ball(frame, ghost_ball, BALL_RADIUS)
 
-        # HUD menu
         frame = self.menu.draw(frame)
 
         return frame
 
-    # =========================
-    # STATIC TEST (CI)
-    # =========================
+    # ================= CI TEST =================
     def run_static_test(self, input_path: str, output_path: str):
 
         frame = cv2.imread(input_path)
@@ -134,19 +117,19 @@ class ProToolOrchestrator:
         cv2.imwrite(output_path, result)
         print(f"[OK] Saved → {output_path}")
 
-    # =========================
-    # LIVE MODE (SCREEN CAPTURE)
-    # =========================
+    # ================= LIVE OVERLAY MODE =================
     def run_live(self):
 
         if self.is_ci:
-            print("CI mode active")
+            print("CI mode active - overlay disabled")
             return
 
         import pyautogui
 
-        cv2.namedWindow("8BP AI OVERLAY", cv2.WINDOW_NORMAL)
-        cv2.setWindowProperty("8BP AI OVERLAY", cv2.WND_PROP_TOPMOST, 1)
+        cv2.namedWindow("AI_OVERLAY", cv2.WINDOW_NORMAL)
+
+        # make overlay transparent & topmost
+        cv2.setWindowProperty("AI_OVERLAY", cv2.WND_PROP_TOPMOST, 1)
 
         while True:
 
@@ -162,7 +145,8 @@ class ProToolOrchestrator:
             cv2.putText(output, f"FPS: {int(fps)}", (30, 40),
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
-            cv2.imshow("8BP AI OVERLAY", output)
+            # 🚀 TRANSPARENT OVERLAY DISPLAY
+            self.overlay.show(output)
 
             if cv2.waitKey(1) & 0xFF == 27:
                 break
@@ -170,9 +154,7 @@ class ProToolOrchestrator:
         cv2.destroyAllWindows()
 
 
-# =========================
-# ENTRY POINT
-# =========================
+# ================= ENTRY POINT =================
 if __name__ == "__main__":
 
     if len(sys.argv) > 1 and sys.argv[1] == "--ci":

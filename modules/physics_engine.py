@@ -1,91 +1,154 @@
-# modules/physics_engine.py
 import math
 from typing import Tuple, List, Optional
 
+
 class PhysicsEngine:
-    def __init__(self, table_bounds: dict, cushion_elasticity: float):
+    def __init__(self, table_bounds: dict, cushion_elasticity: float = 0.85):
         """
-        table_bounds: {'top', 'left', 'width', 'height'} of the active play area.
+        table_bounds:
+        {
+            "top": int,
+            "left": int,
+            "width": int,
+            "height": int
+        }
         """
         self.bounds = table_bounds
         self.elasticity = cushion_elasticity
 
+    # =========================
+    # BASIC DISTANCE
+    # =========================
     def get_distance(self, p1: Tuple[float, float], p2: Tuple[float, float]) -> float:
-        return math.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
+        return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
 
-    def calculate_reflection_point(self, start: Tuple[float, float], pocket: Tuple[float, float], cushion_side: str, power_mode: dict) -> Tuple[float, float]:
-        """
-        Calculates the exact bounce point on a cushion using the Mirror Principle.
-        Incorporates power compression to dynamically adjust the output angle.
-        """
-        x_start, y_start = start
-        x_pock, y_pock = pocket
-        
-        # Determine the mirrored pocket position based on which cushion we hit
+    # =========================
+    # REFLECTION (BANK SHOT CORE)
+    # =========================
+    def calculate_reflection_point(
+        self,
+        start: Tuple[float, float],
+        pocket: Tuple[float, float],
+        cushion_side: str,
+        power_mode: dict
+    ) -> Tuple[float, float]:
+
+        x1, y1 = start
+        x2, y2 = pocket
+
+        # منع القسمة على صفر
+        dx = (x2 - x1)
+        dy = (y2 - y1)
+
+        if dx == 0:
+            dx = 1e-6
+
+        slope = dy / dx
+
+        # حدود الطاولة
+        left = self.bounds["left"]
+        top = self.bounds["top"]
+        right = left + self.bounds["width"]
+        bottom = top + self.bounds["height"]
+
+        bounce_x, bounce_y = x1, y1
+
+        # =========================
+        # TOP CUSHION
+        # =========================
         if cushion_side == "top":
-            mirrored_y = self.bounds["top"] - (y_pock - self.bounds["top"])
-            mirrored_pock = (x_pock, mirrored_y)
+            bounce_y = top
+            bounce_x = x1 + (bounce_y - y1) / slope
+
+        # =========================
+        # BOTTOM CUSHION
+        # =========================
         elif cushion_side == "bottom":
-            mirrored_y = (self.bounds["top"] + self.bounds["height"]) + ((self.bounds["top"] + self.bounds["height"]) - y_pock)
-            mirrored_pock = (x_pock, mirrored_y)
+            bounce_y = bottom
+            bounce_x = x1 + (bounce_y - y1) / slope
+
+        # =========================
+        # LEFT CUSHION
+        # =========================
         elif cushion_side == "left":
-            mirrored_x = self.bounds["left"] - (x_pock - self.bounds["left"])
-            mirrored_pock = (mirrored_x, y_pock)
+            bounce_x = left
+            bounce_y = y1 + slope * (bounce_x - x1)
+
+        # =========================
+        # RIGHT CUSHION
+        # =========================
         elif cushion_side == "right":
-            mirrored_x = (self.bounds["left"] + self.bounds["width"]) + ((self.bounds["left"] + self.bounds["width"]) - x_pock)
-            mirrored_pock = (mirrored_x, y_pock)
+            bounce_x = right
+            bounce_y = y1 + slope * (bounce_x - x1)
+
         else:
-            return (0, 0)
+            return (0.0, 0.0)
 
-        # Intersection line between start point and mirrored pocket to find the bounce point on the cushion
-        # Line equation: y - y1 = m(x - x1)
-        if mirrored_pock[0] == x_start:  # Prevent division by zero
-            return (x_start, self.bounds["top"] if cushion_side == "top" else y_pock)
+        # =========================
+        # CLAMP (IMPORTANT FOR CI + REAL WORLD)
+        # =========================
+        bounce_x = max(left, min(right, bounce_x))
+        bounce_y = max(top, min(bottom, bounce_y))
 
-        slope = (mirrored_pock[1] - y_start) / (mirrored_pock[0] - x_start)
-        
-        if cushion_side in ["top", "bottom"]:
-            bounce_y = self.bounds["top"] if cushion_side == "top" else (self.bounds["top"] + self.bounds["height"])
-            bounce_x = x_start + (bounce_y - y_start) / slope
-            
-            # Apply dynamic power correction (tightens the angle based on force/compression)
-            compression_factor = power_mode.get("angle_compression", 1.0)
-            mid_x = (x_start + x_pock) / 2
-            bounce_x = mid_x + (bounce_x - mid_x) * compression_factor
-            return (bounce_x, bounce_y)
-            
-        else:  # left or right
-            bounce_x = self.bounds["left"] if cushion_side == "left" else (self.bounds["left"] + self.bounds["width"])
-            bounce_y = y_start + slope * (bounce_x - x_start)
-            return (bounce_x, bounce_y)
+        # =========================
+        # POWER MODULATION
+        # =========================
+        compression = power_mode.get("angle_compression", 1.0)
 
-    def calculate_combo_shot(self, cue_ball: Tuple[float, float], target_ball: Tuple[float, float], ghost_ball: Tuple[float, float], pocket: Tuple[float, float], ball_radius: float) -> List[Tuple[float, float]]:
-        """
-        Recursive backwards calculation for Combination (Plant) shots.
-        Calculates path from Pocket -> Ghost Ball -> Target Ball -> Cue Ball.
-        """
-        # Step 1: Calculate the line from pocket to the ghost_ball (the intermediate ball)
-        dx_target = ghost_ball[0] - pocket[0]
-        dy_target = ghost_ball[1] - pocket[1]
-        dist_target = math.hypot(dx_target, dy_target)
-        
-        if dist_target == 0:
+        mid_x = (x1 + x2) / 2
+        bounce_x = mid_x + (bounce_x - mid_x) * compression
+
+        return (float(bounce_x), float(bounce_y))
+
+    # =========================
+    # COMBO SHOTS (PLANT SYSTEM)
+    # =========================
+    def calculate_combo_shot(
+        self,
+        cue_ball: Tuple[float, float],
+        target_ball: Tuple[float, float],
+        ghost_ball: Tuple[float, float],
+        pocket: Tuple[float, float],
+        ball_radius: float
+    ) -> List[Tuple[float, float]]:
+
+        dx = ghost_ball[0] - pocket[0]
+        dy = ghost_ball[1] - pocket[1]
+
+        dist = math.hypot(dx, dy)
+        if dist == 0:
             return []
 
-        # Position where target_ball needs to be hit by ghost_ball
-        hit_pos_ghost_x = ghost_ball[0] + (dx_target / dist_target) * (ball_radius * 2)
-        hit_pos_ghost_y = ghost_ball[1] + (dy_target / dist_target) * (ball_radius * 2)
-        
-        # Step 2: Now treat hit_pos_ghost as the target for the cue ball hitting the target ball
-        dx_cue = target_ball[0] - hit_pos_ghost_x
-        dy_cue = target_ball[1] - hit_pos_ghost_y
-        dist_cue = math.hypot(dx_cue, dy_cue)
-        
-        if dist_cue == 0:
+        # ghost impact point
+        ghost_hit_x = ghost_ball[0] + (dx / dist) * (ball_radius * 2)
+        ghost_hit_y = ghost_ball[1] + (dy / dist) * (ball_radius * 2)
+
+        dx2 = target_ball[0] - ghost_hit_x
+        dy2 = target_ball[1] - ghost_hit_y
+
+        dist2 = math.hypot(dx2, dy2)
+        if dist2 == 0:
             return []
 
-        hit_pos_cue_x = target_ball[0] + (dx_cue / dist_cue) * (ball_radius * 2)
-        hit_pos_cue_y = target_ball[1] + (dy_cue / dist_cue) * (ball_radius * 2)
+        cue_hit_x = target_ball[0] + (dx2 / dist2) * (ball_radius * 2)
+        cue_hit_y = target_ball[1] + (dy2 / dist2) * (ball_radius * 2)
 
-        # Return the sequence of points to draw the complete trajectory path
-        return [cue_ball, (hit_pos_cue_x, hit_pos_cue_y), target_ball, (hit_pos_ghost_x, hit_pos_ghost_y), ghost_ball, pocket]
+        return [
+            cue_ball,
+            (cue_hit_x, cue_hit_y),
+            target_ball,
+            (ghost_hit_x, ghost_hit_y),
+            ghost_ball,
+            pocket
+        ]
+
+    # =========================
+    # SAFE CHECKS
+    # =========================
+    def is_valid_point(self, p: Tuple[float, float]) -> bool:
+        left = self.bounds["left"]
+        top = self.bounds["top"]
+        right = left + self.bounds["width"]
+        bottom = top + self.bounds["height"]
+
+        return left <= p[0] <= right and top <= p[1] <= bottom

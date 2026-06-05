@@ -1,35 +1,44 @@
-import win32gui
-import win32con
-import win32api
-import numpy as np
-import cv2
+import platform
+
+IS_WINDOWS = platform.system().lower() == "windows"
 
 
 class TransparentOverlay:
     def __init__(self, window_name="AI_OVERLAY"):
 
-        self.name = window_name
-        cv2.namedWindow(self.name, cv2.WINDOW_NORMAL)
+        self.window_name = window_name
 
-        hwnd = win32gui.FindWindow(None, self.name)
+        if not IS_WINDOWS:
+            print("[INFO] Overlay disabled (not Windows environment)")
+            self.enabled = False
+            return
 
-        # make window layered + topmost
-        win32gui.SetWindowLong(
+        self.enabled = True
+
+        import cv2
+        import win32gui
+        import win32con
+
+        self.cv2 = cv2
+        self.win32gui = win32gui
+        self.win32con = win32con
+
+        self.cv2.namedWindow(self.window_name, self.cv2.WINDOW_NORMAL)
+
+        hwnd = self.win32gui.FindWindow(None, self.window_name)
+
+        self.win32gui.SetWindowLong(
             hwnd,
-            win32con.GWL_EXSTYLE,
-            win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
-            | win32con.WS_EX_LAYERED
-            | win32con.WS_EX_TRANSPARENT
-            | win32con.WS_EX_TOPMOST
-        )
-
-        win32gui.SetLayeredWindowAttributes(
-            hwnd,
-            0x000000,
-            0,
-            win32con.LWA_COLORKEY
+            self.win32con.GWL_EXSTYLE,
+            self.win32gui.GetWindowLong(hwnd, self.win32con.GWL_EXSTYLE)
+            | self.win32con.WS_EX_LAYERED
+            | self.win32con.WS_EX_TOPMOST
         )
 
     def show(self, frame):
-        cv2.imshow(self.name, frame)
-        cv2.waitKey(1)
+
+        if not self.enabled:
+            return
+
+        self.cv2.imshow(self.window_name, frame)
+        self.cv2.waitKey(1)

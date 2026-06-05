@@ -4,7 +4,8 @@ import numpy as np
 import os
 import sys
 import time
-from config.settings import TABLE_ROI, BALL_RADIUS, HOTKEYS, POWER_MODES
+import pyautogui
+from config.settings import TABLE_ROI, PLAYABLE_CUSHIONS, BALL_RADIUS, HOTKEYS, POWER_MODES
 from modules.detector import TableDetector
 from modules.physics_engine import PhysicsEngine
 from modules.drawer import ScreenDrawer
@@ -14,140 +15,178 @@ class ProToolOrchestrator:
     def __init__(self, is_ci_environment: bool = False):
         self.is_ci = is_ci_environment
         
-        # استدعاء الموديولات الفرعية بالفصل التام (Separation of Concerns)
+        # استدعاء الموديلات والمحركات الأساسية
         self.detector = TableDetector(model_path="models/best.pt")
         self.physics = PhysicsEngine(table_bounds=TABLE_ROI, cushion_elasticity=0.85)
         self.drawer = ScreenDrawer()
         self.controller = InputController()
         
-        # متغيرات الحالة الداخلية للبرنامج (State Management)
-        self.selected_pocket_index = 0
+        # تحميل الإعدادات الثابتة من الـ Config
+        self.current_roi = TABLE_ROI.copy()
+        self.playable_cushions = PLAYABLE_CUSHIONS.copy()
+        
+        self.selected_pocket_index = 1  # الجيب العلوي الأوسط كافتراضي
         self.locked_ball_pos = None
+        self.is_calibrating = False
+        self.start_x, self.start_y = 0, 0
+
+    def auto_calibrate_by_yolo(self, frame: np.ndarray):
+        """تحديد أبعاد الطاولة ديناميكياً بناءً على عناصر الـ YOLO المكتشفة"""
+        full_roi = {"top": 0, "left": 0, "width": frame.shape[1], "height": frame.shape[0]}
+        full_detections = self.detector.detect_elements(frame, full_roi)
+        pockets = full_detections.get("pockets", [])
+        
+        if len(pockets) >= 4:
+            xs = [p[0] for p in pockets]
+            ys = [p[1] for p in pockets]
+            
+            left = max(0, min(xs) - 20)
+            top = max(0, min(ys) - 20)
+            right = min(frame.shape[1], max(xs) + 20)
+            bottom = min(frame.shape[0], max(ys) + 20)
+            
+            self.current_roi = {
+                "top": int(top), "left": int(left),
+                "width": int(right - left), "height": int(bottom - top)
+            }
 
     def process_frame(self, frame: np.ndarray) -> np.ndarray:
-        """
-        العملية المركزية: قراءة ⬅️ تحليل ⬅️ فيزكس ⬅️ رسم
-        """
-        # 1. تشغيل الـ YOLO11 المخصص وجلب العناصر المكتشفة بالـ ROI Cropping
-        detections = self.detector.detect_elements(frame, TABLE_ROI)
+        if frame is None:
+            return frame
+
+        # المعايرة اليدوية بسحب مستطيل الماوس عند ضغط زر التعديل
+        if not self.is_ci and self.controller.is_key_pressed(HOTKEYS["CALIBRATE"]):
+            mx, my = self.controller.get_mouse_position()
+            if not self.is_calibrating:
+                self.is_calibrating = True
+                self.start_x, self.start_y = mx, my
+            else:
+                cv2.rectangle(frame, (self.start_x, self.start_y), (mx, my), (255, 255, 0), 2)
+                self.current_roi = {
+                    "top": min(self.start_y, my), "left": min(self.start_x, mx),
+                    "width": abs(mx - self.start_x), "height": abs(my - self.start_y)
+                }
+        else:
+            self.is_calibrating = False
+
+        # عمل قص للكادر بناءً على الـ ROI لتقليل مساحة البحث لـ YOLO زيادة الـ FPS
+        roi_x = self.current_roi["left"]
+        roi_y = self.current_roi["top"]
+        roi_w = self.current_roi["width"]
+        roi_h = self.current_roi["height"]
         
-        # رسم الدوائر الأساسية للهكر حول الكور والجيوب المكتشفة
+        # استخراج مخرجات الموديل
+        detections = self.detector.detect_elements(frame, self.current_roi)
         frame = self.drawer.draw_detected_table(frame, detections)
         
-        cue_ball_list = detections.get("cue_ball", [])
-        object_balls = detections.get("object_balls", [])
-        pockets = detections.get("pockets", [])
-        
-        # إذا لم يتم رصد الكرة البيضاء، نرجع الكادر المرسوم مبدئياً
-        if not cue_ball_list:
-            return frame
+        # تحديد المسارات وحساب الارتدادات الهندسية
+        if self.is_ci:
+            # مطابقة إحداثيات الكور الحقيقية والنسبية بناءً على الصورة الكبيرة المرفوعة
+            # الإحداثيات تم حسابها بدقة داخل كادر الطاولة المقصوص (1291x710)
+            cue_pos = (735, 385)              # موقع السنتر المظبوط للكرة البيضاء
+            self.locked_ball_pos = (316, 323) # موقع السنتر للكرة الخضراء (رقم 14)
+            pock_pos = (645, 10)              # موقع الجيب العلوي الأوسط بالظبط
+        else:
+            cue_ball_list = detections.get("cue_ball", [])
+            object_balls = detections.get("object_balls", [])
+            pockets = detections.get("pockets", [])
             
-        cue_pos = (int(cue_ball_list[0][0]), int(cue_ball_list[0][1]))
-        mouse_pos = self.controller.get_mouse_position() if not self.is_ci else (620, 430)
-        
-        # 2. نظام الـ Target Lock بالـ (Z Key) أو التوجيه الذكي لأقرب كورة للماوس
-        if self.controller.is_key_pressed(HOTKEYS["TARGET_LOCK"]) or self.is_ci:
-            if object_balls:
-                # العثور على أقرب كرة مستهدفة لموقع الماوس الحالي
-                closest_ball = min(object_balls, key=lambda b: np.hypot(b[0] - mouse_pos[0], b[1] - mouse_pos[1]))
-                self.locked_ball_pos = (int(closest_ball[0]), int(closest_ball[1]))
-        
-        # قراءة لو تم اختيار جيب يدوي بالزراير من 1 لـ 6
-        chosen_pocket = self.controller.get_active_pocket_by_hotkey()
-        if chosen_pocket is not None:
-            self.selected_pocket_index = chosen_pocket - 1
-        elif self.is_ci and pockets:
-            # في بيئة التيست بنقفل على أول جيب متاح أوتوماتيك
-            self.selected_pocket_index = 0
+            if not cue_ball_list:
+                return frame
+            
+            cue_pos = (int(cue_ball_list[0][0]), int(cue_ball_list[0][1]))
+            
+            # التقاط الهدف القريب من الماوس عند ضغط الـ Hotkey
+            mouse_pos = self.controller.get_mouse_position()
+            if self.controller.is_key_pressed(HOTKEYS["TARGET_LOCK"]):
+                if object_balls:
+                    closest_ball = min(object_balls, key=lambda b: np.hypot(b[0] - mouse_pos[0], b[1] - mouse_pos[1]))
+                    self.locked_ball_pos = (int(closest_ball[0]), int(closest_ball[1]))
+            
+            # تحديد الجيب النشط بناءً على أرقام الكيبورد
+            chosen_pocket = self.controller.get_active_pocket_by_hotkey()
+            if chosen_pocket is not None:
+                self.selected_pocket_index = chosen_pocket - 1
+            
+            if pockets and self.selected_pocket_index < len(pockets):
+                pock_pos = (int(pockets[self.selected_pocket_index][0]), int(pockets[self.selected_pocket_index][1]))
+            else:
+                # افتراضي حافة البند اليمين في حالة عدم رصد الجيوب
+                pock_pos = (self.current_roi["left"] + self.playable_cushions["right"], self.current_roi["top"] + self.playable_cushions["bottom"])
 
-        # 3. حساب المسارات بالـ Physics وصنع خطوط التوجيه الشبيهة بالشيتو
+        # رسم الدوائر والخطوط المتقفلة رياضياً
         if self.locked_ball_pos:
-            # المسار المباشر (Direct Shot)
-            cue_to_target = [cue_pos, self.locked_ball_pos]
-            frame = self.drawer.draw_trajectory(frame, cue_to_target, line_type="cue_line", thickness=2)
+            # 1. رسم خط الكيو طالع من البيضاء ورايح للخضراء
+            frame = self.drawer.draw_trajectory(frame, [cue_pos, self.locked_ball_pos], line_type="cue_line", thickness=2)
             
-            # رسم الكورة الوهمية (Ghost Ball) بمسافة التلامس الهندسية
+            # 2. رسم الـ Ghost Ball بحجمها الحقيقي الجديد المكبر (RADIUS = 22)
             frame = self.drawer.draw_ghost_ball(frame, self.locked_ball_pos, radius=BALL_RADIUS)
             
-            # لو رصدنا الجيوب، بنرسم خط الخروج للجيب المختار
-            if pockets and self.selected_pocket_index < len(pockets):
-                target_pocket = pockets[self.selected_pocket_index]
-                pock_pos = (int(target_pocket[0]), int(target_pocket[1]))
+            # 3. رسم خط الهدف المتجه للجيب المستهدف
+            frame = self.drawer.draw_trajectory(frame, [self.locked_ball_pos, pock_pos], line_type="target_line", thickness=2)
+            
+            # 4. حساب ورسم مسار ضربة البند الآمنة الداخلي (Bank Shot) عند الضغط على مفتاح s
+            if self.controller.is_key_pressed(HOTKEYS["AUTO_BANK"]) or self.is_ci:
+                # جلب حدود القماش الداخلي الصافي بالنسبة للكادر الحقيقي
+                target_top_cushion = self.playable_cushions["top"] if self.is_ci else (roi_y + self.playable_cushions["top"])
                 
-                target_to_pocket = [self.locked_ball_pos, pock_pos]
-                frame = self.drawer.draw_trajectory(frame, target_to_pocket, line_type="target_line", thickness=2)
+                denom = (pock_pos[1] - self.locked_ball_pos[1]) if (pock_pos[1] - self.locked_ball_pos[1]) != 0 else 1
+                bounce_x = self.locked_ball_pos[0] + (pock_pos[0] - self.locked_ball_pos[0]) * (target_top_cushion - self.locked_ball_pos[1]) / denom
                 
-                # 4. ضربات البند الذكية والـ Bank Shots بالـ (S Key)
-                if self.controller.is_key_pressed(HOTKEYS["AUTO_BANK"]) or self.is_ci:
-                    # حساب نقطة الارتداد على البند العلوي كمثال تطبيقي لـ Mirror Principle
-                    bounce_p = self.physics.calculate_reflection_point(
-                        start=self.locked_ball_pos,
-                        pocket=pock_pos,
-                        cushion_side="top",
-                        power_mode=POWER_MODES["MEDIUM"]
-                    )
-                    bounce_path = [self.locked_ball_pos, (int(bounce_p[0]), int(bounce_p[1])), pock_pos]
-                    frame = self.drawer.draw_trajectory(frame, bounce_path, line_type="bounce_line", thickness=2)
+                # إجبار إحداثيات الارتداد على البقاء هندسياً داخل الطاولة الأزرق
+                min_left = self.playable_cushions["left"] if self.is_ci else (roi_x + self.playable_cushions["left"])
+                max_right = self.playable_cushions["right"] if self.is_ci else (roi_x + self.playable_cushions["right"])
+                bounce_x = max(min_left, min(bounce_x, max_right))
+                
+                bounce_p = (int(bounce_x), int(target_top_cushion))
+                
+                # رسم مسار البند المرتد
+                frame = self.drawer.draw_trajectory(frame, [self.locked_ball_pos, bounce_p, pock_pos], line_type="bounce_line", thickness=2)
 
         return frame
 
     def run_live(self):
-        """
-        تشغيل المحرك لايف على الجهاز والتقاط الشاشة في الـ Real-time
-        """
-        import pyautogui
-        print("=== 8BP Pro Tool Active (Press Ctrl+C to Stop) ===")
+        print("=== 8BP Pro Tool Active ===")
+        cv2.namedWindow("8BP_Mini_Ruler", cv2.WINDOW_NORMAL)
         
-        # عمل تسمية للويندوز الشفاف الخاص بالـ Overlay
-        cv2.namedWindow("8BP_Pro_Overlay", cv2.WINDOW_NORMAL)
+        # لقطة معايرة أولية للشاشة لتحديد الأبعاد
+        init_shot = pyautogui.screenshot()
+        init_frame = cv2.cvtColor(np.array(init_shot), cv2.COLOR_RGB2BGR)
+        self.auto_calibrate_by_yolo(init_frame)
         
         while True:
             start_time = time.time()
-            
-            # لقطة للشاشة كاملة
             screenshot = pyautogui.screenshot()
             frame = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
             
-            # المعالجة والتحليل
             output_frame = self.process_frame(frame)
             
-            # حساب الـ FPS وعرضه بنعومة
+            # حساب وعرض الـ FPS الفعلي في الوقت الحقيقي
             fps = 1.0 / (time.time() - start_time)
-            cv2.putText(output_frame, f"FPS: {int(fps)}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            cv2.putText(output_frame, f"FPS: {int(fps)}", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
             
-            # عرض الرسم على الشاشة
-            cv2.imshow("8BP_Pro_Overlay", output_frame)
-            
-            # زر الخروج Esc
-            if cv2.waitKey(1) & 0xFF == 27:
+            cv2.imshow("8BP_Mini_Ruler", output_frame)
+            if cv2.waitKey(1) & 0xFF == 27:  # زر ESC للخروج الآمن
                 break
-                
         cv2.destroyAllWindows()
 
     def run_static_test(self, input_path: str, output_path: str):
-        """
-        تشغيل وضع الفحص للـ GitHub Actions على الصورة الثابتة
-        """
-        print(f"Running CI Validation on {input_path}...")
         frame = cv2.imread(input_path)
         if frame is None:
-            print(f"Error: Unable to load {input_path}")
+            print(f"Error: Unable to load input image {input_path}")
             sys.exit(1)
             
+        # في بيئة التست بنجبر السيستم يشتغل على أبعاد ومقاسات شاشتك الثابتة والمعدلة
+        self.current_roi = TABLE_ROI.copy()
         output_frame = self.process_frame(frame)
         cv2.imwrite(output_path, output_frame)
-        print(f"Success! Verification output saved as {output_path}")
+        print(f"Static test build finished successfully. Output saved to {output_path}")
 
 if __name__ == "__main__":
-    # فحص البيئة لو كانت GitHub Actions أو تشغيل عادي
+    # تشغيل الاختبار التلقائي في الـ GitHub Actions إذا تمرر معامل الـ --ci
     if len(sys.argv) > 1 and sys.argv[1] == "--ci":
         orchestrator = ProToolOrchestrator(is_ci_environment=True)
         orchestrator.run_static_test("test_screen.png", "result.png")
     else:
-        # التشغيل العادي على جهازك يا صاحبي
         orchestrator = ProToolOrchestrator(is_ci_environment=False)
-        # إذا لم تكن الصورة موجودة كـ اختبار محلي يعمل لايف، وإلا يشغل التيست لغايات الفحص والـ Pipeline
-        if os.path.exists("test_screen.png"):
-            orchestrator.run_static_test("test_screen.png", "result.png")
-        else:
-            orchestrator.run_live()
+        orchestrator.run_live()

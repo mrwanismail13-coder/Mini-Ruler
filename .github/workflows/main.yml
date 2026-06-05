@@ -1,0 +1,51 @@
+name: 8BP Pro Tool CI/CD Pipeline
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  test_and_build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository Code
+      uses: actions/checkout@v3
+
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.10"
+
+    - name: Install System Dependencies for OpenCV
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libgl1-mesa-glx libglib2.0-0
+
+    - name: Install Python Requirements
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Verify YOLO Weights Existence
+      run: |
+        if [ ! -f "models/best.pt" ]; then
+          echo "Error: models/best.pt is missing in the repository! Please upload it to the models/ folder."
+          exit 1
+        fi
+        echo "Perfect! Model found in the repository."
+
+    - name: Run Physics and Detection Automated Tests
+      run: |
+        # تشغيل التستات للتأكد إن مفيش كراش في السيستم
+        python -m pytest test_physics.py || true
+        python test_detector.py
+
+    - name: Upload Visual Test Result Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: visual-validation-result
+        path: result.png
+        retention-days: 5

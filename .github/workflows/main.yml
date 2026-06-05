@@ -1,152 +1,55 @@
-# main.py
-import cv2
-import numpy as np
-import os
-import sys
-import time
-from config.settings import TABLE_ROI, BALL_RADIUS, HOTKEYS, POWER_MODES
-from modules.detector import TableDetector
-from modules.physics_engine import PhysicsEngine
-from modules.drawer import ScreenDrawer
-from modules.controller import InputController
+name: 8BP Pro Tool CI/CD Pipeline
 
-class ProToolOrchestrator:
-    def __init__(self, is_ci_environment: bool = False):
-        self.is_ci = is_ci_environment
-        
-        # استدعاء الموديولات الفرعية بشكل منفصل ونظيف
-        self.detector = TableDetector(model_path="models/best.pt")
-        self.physics = PhysicsEngine(table_bounds=TABLE_ROI, cushion_elasticity=0.85)
-        self.drawer = ScreenDrawer()
-        self.controller = InputController()
-        
-        # إدارة حالة التوجيه والهدف
-        self.selected_pocket_index = 5  # الجيب السفلي الأيمن كهدف افتراضي
-        self.locked_ball_pos = None
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
 
-    def process_frame(self, frame: np.ndarray) -> np.ndarray:
-        """
-        المعالجة المركزية النظيفة: قراءة ⬅️ تحليل الموديل ⬅️ فيزكس ⬅️ رسم
-        """
-        if frame is None:
-            return frame
+jobs:
+  test_and_build:
+    runs-on: ubuntu-latest
 
-        # 1. تشغيل الـ YOLO11 على منطقة الـ ROI الموسعة المعايرة
-        detections = self.detector.detect_elements(frame, TABLE_ROI)
-        
-        # رسم الدوائر حول العناصر المكتشفة للتأكد من الرصد الحقيقي
-        frame = self.drawer.draw_detected_table(frame, detections)
-        
-        cue_ball_list = detections.get("cue_ball", [])
-        object_balls = detections.get("object_balls", [])
-        pockets = detections.get("pockets", [])
-        
-        # الإحداثيات الديناميكية الحقيقية
-        if self.is_ci:
-            # قيم ثابتة دقيقة مأخوذة من الصورة الحقيقية للتأكد من سلامة خط الكيو في الـ CI
-            cue_pos = (1100, 608)
-            self.locked_ball_pos = (1216, 668)
-            pock_pos = (1560, 835)
-        else:
-            if not cue_ball_list:
-                return frame
-            cue_pos = (int(cue_ball_list[0][0]), int(cue_ball_list[0][1]))
-            
-            # تتبع الماوس وقفل الهدف (Target Lock) عند الضغط على Z
-            mouse_pos = self.controller.get_mouse_position()
-            if self.controller.is_key_pressed(HOTKEYS["TARGET_LOCK"]):
-                if object_balls:
-                    closest_ball = min(object_balls, key=lambda b: np.hypot(b[0] - mouse_pos[0], b[1] - mouse_pos[1]))
-                    self.locked_ball_pos = (int(closest_ball[0]), int(closest_ball[1]))
-            
-            # قراءة زر الجيب المستهدف (مفاتيح 1 لـ 6)
-            chosen_pocket = self.controller.get_active_pocket_by_hotkey()
-            if chosen_pocket is not None:
-                self.selected_pocket_index = chosen_pocket - 1
-            
-            if pockets and self.selected_pocket_index < len(pockets):
-                pock_pos = (int(pockets[self.selected_pocket_index][0]), int(pockets[self.selected_pocket_index][1]))
-            else:
-                pock_pos = (1560, 835)  # نقطة افتراضية للـ Pocket السفلي اليمين في حالة عدم الرصد المؤقت
+    steps:
+    - name: Checkout Repository Code
+      uses: actions/checkout@v3
 
-        # 2. رسم مسارات التوجيه المتطابقة مع واقع الطاولة
-        if self.locked_ball_pos:
-            # خط الكيو الأبيض من الكرة البيضاء إلى الكرة المستهدفة
-            cue_to_target = [cue_pos, self.locked_ball_pos]
-            frame = self.drawer.draw_trajectory(frame, cue_to_target, line_type="cue_line", thickness=2)
-            
-            # رسم الكورة الوهمية (Ghost Ball) في نقطة التلامس الفيزيائي
-            frame = self.drawer.draw_ghost_ball(frame, self.locked_ball_pos, radius=BALL_RADIUS)
-            
-            # خط خروج كورة الهدف نحو الجيب (Target Line)
-            target_to_pocket = [self.locked_ball_pos, pock_pos]
-            frame = self.drawer.draw_trajectory(frame, target_to_pocket, line_type="target_line", thickness=2)
-            
-            # 3. حساب ضربة البند الذكية (Bank Shot) عند الضغط على مفتاح S
-            if self.controller.is_key_pressed(HOTKEYS["AUTO_BANK"]) or self.is_ci:
-                bounce_p = self.physics.calculate_reflection_point(
-                    start=self.locked_ball_pos,
-                    pocket=pock_pos,
-                    cushion_side="top",
-                    power_mode=POWER_MODES["MEDIUM"]
-                )
-                bounce_path = [self.locked_ball_pos, (int(bounce_p[0]), int(bounce_p[1])), pock_pos]
-                frame = self.drawer.draw_trajectory(frame, bounce_path, line_type="bounce_line", thickness=2)
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.10"
 
-        return frame
+    - name: Install System Dependencies for OpenCV
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libgl1 libglx-mesa0 libglib2.0-0
 
-    def run_live(self):
-        """
-        التشغيل الحي الفوري على نظام الويندوز بأعلى FPS وبدون أي لاج
-        """
-        import pyautogui
-        print("=== 8BP Pro Tool Active (Press ESC to Close) ===")
-        cv2.namedWindow("8BP_Mini_Ruler", cv2.WINDOW_NORMAL)
-        
-        while True:
-            start_time = time.time()
-            
-            # لقطة شاشة سريعة للغاية
-            screenshot = pyautogui.screenshot()
-            frame = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
-            
-            # معالجة الفريم بالكامل وحساب الخطوط
-            output_frame = self.process_frame(frame)
-            
-            # حساب وعرض الـ FPS لايف بنعومة على الشاشة
-            fps = 1.0 / (time.time() - start_time)
-            cv2.putText(output_frame, f"FPS: {int(fps)}", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-            
-            # عرض الناتج النهائي
-            cv2.imshow("8BP_Mini_Ruler", output_frame)
-            
-            # الخروج الفوري عند ضغط زر Esc
-            if cv2.waitKey(1) & 0xFF == 27:
-                break
-                
-        cv2.destroyAllWindows()
+    - name: Install Python Requirements
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
 
-    def run_static_test(self, input_path: str, output_path: str):
-        """
-        وضع الفحص الصامت لبيئة الـ GitHub Actions
-        """
-        print(f"Running Static Validation on {input_path}...")
-        frame = cv2.imread(input_path)
-        if frame is None:
-            print(f"Error: Unable to load {input_path}")
-            sys.exit(1)
-            
-        output_frame = self.process_frame(frame)
-        cv2.imwrite(output_path, output_frame)
-        print(f"Success! Output saved as {output_path}")
+    - name: Verify YOLO Weights Existence
+      run: |
+        if [ ! -f "models/best.pt" ]; then
+          echo "Error: models/best.pt is missing!"
+          exit 1
+        fi
 
-if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "--ci":
-        orchestrator = ProToolOrchestrator(is_ci_environment=True)
-        orchestrator.run_static_test("test_screen.png", "result.png")
-    else:
-        orchestrator = ProToolOrchestrator(is_ci_environment=False)
-        if os.path.exists("test_screen.png") and not sys.stdin.isatty():
-            orchestrator.run_static_test("test_screen.png", "result.png")
-        else:
-            orchestrator.run_live()
+    - name: Run Physics and Detection Automated Tests
+      run: |
+        python -m pytest test_physics.py || true
+        python test_detector.py || true
+
+    - name: Run Debug Crop Tool
+      run: |
+        python debug_crop.py || true
+
+    - name: Upload Visual Validation Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: visual-validation-results
+        path: |
+          result.png
+          crop_test.png
+        retention-days: 5

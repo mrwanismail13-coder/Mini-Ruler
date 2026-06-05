@@ -2,8 +2,6 @@ name: Build 8BP Pro Tool EXE
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ "main", "master" ]
 
 jobs:
   build:

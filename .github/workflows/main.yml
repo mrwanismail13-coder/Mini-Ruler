@@ -41,6 +41,10 @@ jobs:
         python -m pytest test_physics.py || true
         python test_detector.py || true
 
+    - name: Run Core Main Script Test
+      run: |
+        python main.py --ci || true
+
     - name: Run Debug Crop Tool
       run: |
         python debug_crop.py || true
@@ -50,6 +54,6 @@ jobs:
       with:
         name: visual-validation-results
         path: |
-          result.png
-          crop_test.png
+          *.png
+          *.jpg
         retention-days: 5

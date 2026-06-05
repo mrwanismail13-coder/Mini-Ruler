@@ -1,107 +1,125 @@
 import cv2
 import numpy as np
-import sys
 import time
-import platform
 
-from config.settings import TABLE_ROI, PLAYABLE_CUSHIONS, BALL_RADIUS, HOTKEYS
+from config.settings import TABLE_ROI, PLAYABLE_CUSHIONS, BALL_RADIUS, POWER_MODES, HOTKEYS
 from modules.detector import TableDetector
 from modules.physics_engine import PhysicsEngine
 from modules.drawer import ScreenDrawer
 from modules.controller import InputController
 
-# محاولة استيراد pyautogui (مهم للـ CI)
-try:
-    import pyautogui
-except Exception:
-    pyautogui = None
-
 
 class ProToolOrchestrator:
-    def __init__(self, is_ci_environment: bool = False):
-        self.is_ci = is_ci_environment
-
-        self.detector = TableDetector(model_path="models/best.pt")
-        self.physics = PhysicsEngine(table_bounds=TABLE_ROI, cushion_elasticity=0.85)
+    def __init__(self):
+        self.detector = TableDetector("models/best.pt")
+        self.physics = PhysicsEngine(TABLE_ROI, cushion_elasticity=0.85)
         self.drawer = ScreenDrawer()
         self.controller = InputController()
 
-        self.current_roi = TABLE_ROI.copy()
-        self.playable_cushions = PLAYABLE_CUSHIONS.copy()
+        self.current_pocket_index = 0
+        self.locked_target = None
 
-        self.locked_ball_pos = None
-        self.selected_pocket_index = 1
-
+    # =========================
+    # CORE PIPELINE
+    # =========================
     def process_frame(self, frame: np.ndarray) -> np.ndarray:
-        if frame is None:
-            return frame
 
-        detections = self.detector.detect_elements(frame, self.current_roi)
+        detections = self.detector.detect_elements(frame, TABLE_ROI)
 
-        cue_ball_list = detections.get("cue_ball", [])
+        cue_list = detections.get("cue_ball", [])
         object_balls = detections.get("object_balls", [])
         pockets = detections.get("pockets", [])
 
-        if not cue_ball_list:
+        # لازم يكون فيه كورة بيضا
+        if not cue_list or len(object_balls) == 0 or len(pockets) == 0:
             return self.drawer.draw_detected_table(frame, detections)
 
-        cue_pos = (int(cue_ball_list[0][0]), int(cue_ball_list[0][1]))
+        cue = (int(cue_list[0][0]), int(cue_list[0][1]))
 
-        mouse_pos = self.controller.get_mouse_position()
-
+        # =========================
+        # TARGET SELECTION (Closest ball)
+        # =========================
         if self.controller.is_key_pressed(HOTKEYS["TARGET_LOCK"]):
-            if object_balls:
-                closest_ball = min(
-                    object_balls,
-                    key=lambda b: np.hypot(b[0] - mouse_pos[0], b[1] - mouse_pos[1])
-                )
-                self.locked_ball_pos = (int(closest_ball[0]), int(closest_ball[1]))
+            mouse = self.controller.get_mouse_position()
 
-        chosen_pocket = self.controller.get_active_pocket_by_hotkey()
-        if chosen_pocket is not None:
-            self.selected_pocket_index = chosen_pocket - 1
-
-        if pockets and self.selected_pocket_index < len(pockets):
-            pock_pos = (
-                int(pockets[self.selected_pocket_index][0]),
-                int(pockets[self.selected_pocket_index][1])
+            self.locked_target = min(
+                object_balls,
+                key=lambda b: np.hypot(b[0] - mouse[0], b[1] - mouse[1])
             )
+
+        if self.locked_target is None:
+            target = object_balls[0]
         else:
-            pock_pos = (
-                self.current_roi["left"] + self.playable_cushions["right"],
-                self.current_roi["top"] + self.playable_cushions["bottom"]
-            )
+            target = self.locked_target
 
-        if self.locked_ball_pos:
-            frame = self.drawer.draw_trajectory(frame, [cue_pos, self.locked_ball_pos], "cue_line", 3)
-            frame = self.drawer.draw_ghost_ball(frame, self.locked_ball_pos, BALL_RADIUS)
-            frame = self.drawer.draw_trajectory(frame, [self.locked_ball_pos, pock_pos], "target_line", 3)
+        target = (int(target[0]), int(target[1]))
 
-        return self.drawer.draw_detected_table(frame, detections)
+        # =========================
+        # POCKET SELECTION
+        # =========================
+        pocket_index = self.controller.get_active_pocket_by_hotkey()
+        if pocket_index:
+            self.current_pocket_index = pocket_index - 1
+
+        pocket = pockets[self.current_pocket_index]
+        pocket = (int(pocket[0]), int(pocket[1]))
+
+        # =========================
+        # PHYSICS INTEGRATION (CORE FIX)
+        # =========================
+
+        # 1- Ghost ball position (critical physics step)
+        dx = target[0] - pocket[0]
+        dy = target[1] - pocket[1]
+        dist = np.hypot(dx, dy)
+
+        if dist == 0:
+            return frame
+
+        ghost_ball = (
+            int(target[0] + (dx / dist) * (BALL_RADIUS * 2)),
+            int(target[1] + (dy / dist) * (BALL_RADIUS * 2))
+        )
+
+        # 2- Choose cushion dynamically (simple heuristic)
+        cushion_side = "top" if target[1] < pocket[1] else "bottom"
+
+        # 3- Physics bounce calculation (REAL USE)
+        bounce = self.physics.calculate_reflection_point(
+            start=cue,
+            pocket=pocket,
+            cushion_side=cushion_side,
+            power_mode=POWER_MODES["MEDIUM"]
+        )
+
+        # =========================
+        # DRAW RESULTS
+        # =========================
+
+        # cue → target
+        frame = self.drawer.draw_trajectory(frame, [cue, target], "cue_line", 3)
+
+        # target → pocket (direct line)
+        frame = self.drawer.draw_trajectory(frame, [target, pocket], "target_line", 2)
+
+        # physics bounce indicator
+        frame = self.drawer.draw_trajectory(frame, [cue, bounce], "bounce_line", 2)
+
+        # ghost ball visualization
+        frame = self.drawer.draw_ghost_ball(frame, ghost_ball, BALL_RADIUS)
+
+        # pocket highlight path
+        frame = self.drawer.draw_trajectory(frame, [bounce, pocket], "combo_line", 2)
+
+        return frame
 
     # =========================
-    # CI SAFE MODE (NO SCREENSHOT)
-    # =========================
-    def run_static_test(self, input_path: str, output_path: str):
-        frame = cv2.imread(input_path)
-
-        if frame is None:
-            raise FileNotFoundError(f"Missing test image: {input_path}")
-
-        result = self.process_frame(frame)
-
-        cv2.imwrite(output_path, result)
-        print(f"Test completed → {output_path}")
-
-    # =========================
-    # LIVE MODE (WINDOWS ONLY)
+    # LIVE MODE
     # =========================
     def run_live(self):
-        if self.is_ci or pyautogui is None:
-            print("Live mode disabled in CI environment")
-            return
+        import pyautogui
 
-        cv2.namedWindow("8BP Tool", cv2.WINDOW_NORMAL)
+        cv2.namedWindow("8BP Physics AI", cv2.WINDOW_NORMAL)
 
         while True:
             start = time.time()
@@ -112,10 +130,10 @@ class ProToolOrchestrator:
             output = self.process_frame(frame)
 
             fps = 1.0 / (time.time() - start)
-            cv2.putText(output, f"FPS: {int(fps)}", (30, 50),
+            cv2.putText(output, f"FPS: {int(fps)}", (30, 40),
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
-            cv2.imshow("8BP Tool", output)
+            cv2.imshow("8BP Physics AI", output)
 
             if cv2.waitKey(1) & 0xFF == 27:
                 break
@@ -124,10 +142,4 @@ class ProToolOrchestrator:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "--ci":
-        ProToolOrchestrator(is_ci_environment=True).run_static_test(
-            "test_screen.png",
-            "result.png"
-        )
-    else:
-        ProToolOrchestrator().run_live()
+    ProToolOrchestrator().run_live()

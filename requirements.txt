@@ -6,6 +6,3 @@ keyboard>=0.13.5
 mouse>=0.7.1
 pyinstaller>=6.3.0
 pyautogui>=0.9.54
-
-# Windows API (overlay support)
-pywin32>=306

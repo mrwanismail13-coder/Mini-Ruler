@@ -16,6 +16,7 @@ from modules.transparent_overlay import TransparentOverlay
 
 from modules.obstacle_detector import ObstacleDetector
 from modules.auto_reroute import AutoReroute
+from modules.shot_difficulty import ShotDifficultyEngine
 
 
 class ProToolOrchestrator:
@@ -24,26 +25,26 @@ class ProToolOrchestrator:
 
         self.is_ci = is_ci_environment
 
-        # CORE
+        # ================= CORE =================
         self.detector = TableDetector("models/best.pt")
         self.drawer = ScreenDrawer()
         self.controller = InputController()
 
-        # AI
+        # ================= AI MODULES =================
         self.tracker = WhiteBallTracker()
         self.menu = HUDMenu()
         self.overlay = TransparentOverlay()
 
-        # NEW SYSTEMS
         self.obstacles = ObstacleDetector()
         self.rerouter = AutoReroute(TABLE_ROI)
+        self.shot_ai = ShotDifficultyEngine()
 
-        # STATE
+        # ================= STATE =================
         self.locked_target = None
         self.selected_pocket = 0
 
     # =========================
-    # AUTO TARGET RANKING
+    # AUTO TARGET RANKING (WITH SHOT AI)
     # =========================
     def rank_targets(self, cue, object_balls, pocket):
 
@@ -54,22 +55,12 @@ class ProToolOrchestrator:
 
             bx, by = ball[0], ball[1]
 
-            # distance cue -> ball
-            d1 = np.hypot(cue[0] - bx, cue[1] - by)
-
-            # distance ball -> pocket
-            d2 = np.hypot(pocket[0] - bx, pocket[1] - by)
-
-            # obstacle penalty (simple check)
-            blockers = self.obstacles.find_blocking_balls(
+            score = self.shot_ai.evaluate_shot(
                 cue,
                 (bx, by),
+                pocket,
                 [(b[0], b[1]) for b in object_balls]
             )
-
-            penalty = len(blockers) * 200  # كل عائق يقلل الاختيار
-
-            score = d1 + d2 + penalty
 
             if score < best_score:
                 best_score = score
@@ -78,7 +69,7 @@ class ProToolOrchestrator:
         return best_ball
 
     # =========================
-    # PROCESS FRAME
+    # FRAME PROCESSING
     # =========================
     def process_frame(self, frame):
 
@@ -99,7 +90,7 @@ class ProToolOrchestrator:
         pocket = (int(pocket[0]), int(pocket[1]))
 
         # =========================
-        # AUTO TARGET RANKING (NEW)
+        # TARGET SELECTION (AI)
         # =========================
         target = self.rank_targets(cue, object_balls, pocket)
         target = (int(target[0]), int(target[1]))
@@ -118,31 +109,29 @@ class ProToolOrchestrator:
             blockers
         )
 
-        # render base
+        # =========================
+        # RENDER
+        # =========================
         frame = self.drawer.draw_detected_table(frame, detections)
 
-        # draw route
         frame = self.drawer.draw_trajectory(frame, route, "combo_line", 2)
 
-        # ghost ball
-        ghost = (
-            int(target[0]),
-            int(target[1])
-        )
+        frame = self.drawer.draw_ghost_ball(frame, target, BALL_RADIUS)
 
-        frame = self.drawer.draw_ghost_ball(frame, ghost, BALL_RADIUS)
+        # ================= DEBUG =================
+        cv2.putText(frame, f"SHOT AI ACTIVE", (30, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-        # debug info
-        cv2.putText(frame, f"MODE: {mode}", (30, 70),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+        cv2.putText(frame, f"MODE: {mode}", (30, 90),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
-        cv2.putText(frame, f"TARGET SCORE SYSTEM ACTIVE", (30, 110),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        cv2.putText(frame, f"TARGET: AUTO RANKED", (30, 120),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
 
         return frame
 
     # =========================
-    # LIVE
+    # LIVE MODE
     # =========================
     def run_live(self):
 
@@ -156,14 +145,14 @@ class ProToolOrchestrator:
 
             start = time.time()
 
-            frame = pyautogui.screenshot()
-            frame = cv2.cvtColor(np.array(frame), cv2.COLOR_RGB2BGR)
+            screen = pyautogui.screenshot()
+            frame = cv2.cvtColor(np.array(screen), cv2.COLOR_RGB2BGR)
 
             output = self.process_frame(frame)
 
             fps = 1.0 / (time.time() - start)
 
-            cv2.putText(output, f"FPS: {int(fps)}", (30, 40),
+            cv2.putText(output, f"FPS: {int(fps)}", (30, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
             self.overlay.show(output)
@@ -174,10 +163,13 @@ class ProToolOrchestrator:
         cv2.destroyAllWindows()
 
 
-# ENTRY
+# ================= ENTRY =================
 if __name__ == "__main__":
 
     if len(sys.argv) > 1 and sys.argv[1] == "--ci":
-        ProToolOrchestrator(True).run_static_test("test_screen.png", "result.png")
+        ProToolOrchestrator(True).run_static_test(
+            "test_screen.png",
+            "result.png"
+        )
     else:
         ProToolOrchestrator().run_live()

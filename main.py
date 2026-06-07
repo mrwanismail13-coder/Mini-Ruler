@@ -33,31 +33,39 @@ class ProToolOrchestrator:
         self.locked_target = None
         self.selected_pocket = 0
 
-    # =========================================================
-    # 🎯 AUTO TARGET RANKING ENGINE
-    # =========================================================
-    def score_ball(self, cue, ball, pocket):
+    # =========================
+    # 🎯 AUTO SHOT SCORING
+    # =========================
+    def score_shot(self, cue, ball, pocket):
         d_cue = np.hypot(ball[0] - cue[0], ball[1] - cue[1])
-        d_pocket = np.hypot(ball[0] - pocket[0], ball[1] - pocket[1])
+        d_ball_to_pocket = np.hypot(ball[0] - pocket[0], ball[1] - pocket[1])
+        d_cue_to_pocket = np.hypot(cue[0] - pocket[0], cue[1] - pocket[1])
 
         score = 0
-        score += max(0, 1000 - d_pocket)
+        score += max(0, 1000 - d_ball_to_pocket)
         score += max(0, 1000 - d_cue)
+        score += max(0, 800 - d_cue_to_pocket)
 
         return score
 
-    def select_best_target(self, cue, object_balls, pocket):
+    # =========================
+    # 🎯 BEST SHOT SELECTION
+    # =========================
+    def select_best_shot(self, cue, object_balls, pockets):
         best_ball = None
+        best_pocket = None
         best_score = -1
 
         for ball in object_balls:
-            score = self.score_ball(cue, ball, pocket)
+            for pocket in pockets:
+                score = self.score_shot(cue, ball, pocket)
 
-            if score > best_score:
-                best_score = score
-                best_ball = ball
+                if score > best_score:
+                    best_score = score
+                    best_ball = ball
+                    best_pocket = pocket
 
-        return best_ball
+        return best_ball, best_pocket
 
     # ================= FRAME PIPELINE =================
     def process_frame(self, frame: np.ndarray) -> np.ndarray:
@@ -74,29 +82,14 @@ class ProToolOrchestrator:
 
         cue = (int(cue[0]), int(cue[1]))
 
-        # ================= TARGET LOCK =================
-        if self.controller.is_key_pressed(HOTKEYS["TARGET_LOCK"]):
-            mouse = self.controller.get_mouse_position()
-
-            self.locked_target = min(
-                object_balls,
-                key=lambda b: np.hypot(b[0] - mouse[0], b[1] - mouse[1])
-            )
-
-        # ================= AUTO TARGET RANKING =================
-        if self.locked_target:
-            target = self.locked_target
-        else:
-            target = self.select_best_target(
-                cue,
-                object_balls,
-                pockets[self.selected_pocket]
-            )
+        # ================= AUTO TARGET + POCKET =================
+        target, pocket = self.select_best_shot(
+            cue,
+            object_balls,
+            pockets
+        )
 
         target = (int(target[0]), int(target[1]))
-
-        # ================= POCKET =================
-        pocket = pockets[self.selected_pocket]
         pocket = (int(pocket[0]), int(pocket[1]))
 
         # ================= PHYSICS =================
@@ -145,7 +138,7 @@ class ProToolOrchestrator:
         cv2.imwrite(output_path, result)
         print(f"[OK] Saved → {output_path}")
 
-    # ================= LIVE MODE =================
+    # ================= LIVE =================
     def run_live(self):
 
         if self.is_ci:

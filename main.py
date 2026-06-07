@@ -33,20 +33,44 @@ class ProToolOrchestrator:
         self.locked_target = None
         self.selected_pocket = 0
 
+    # =========================================================
+    # 🎯 AUTO TARGET RANKING ENGINE
+    # =========================================================
+    def score_ball(self, cue, ball, pocket):
+        d_cue = np.hypot(ball[0] - cue[0], ball[1] - cue[1])
+        d_pocket = np.hypot(ball[0] - pocket[0], ball[1] - pocket[1])
+
+        score = 0
+        score += max(0, 1000 - d_pocket)
+        score += max(0, 1000 - d_cue)
+
+        return score
+
+    def select_best_target(self, cue, object_balls, pocket):
+        best_ball = None
+        best_score = -1
+
+        for ball in object_balls:
+            score = self.score_ball(cue, ball, pocket)
+
+            if score > best_score:
+                best_score = score
+                best_ball = ball
+
+        return best_ball
+
     # ================= FRAME PIPELINE =================
     def process_frame(self, frame: np.ndarray) -> np.ndarray:
 
         detections = self.detector.detect_elements(frame, TABLE_ROI)
 
-        # 🎯 stable cue ball tracking
         cue = self.tracker.update(detections)
 
         object_balls = detections.get("object_balls", [])
         pockets = detections.get("pockets", [])
 
         if cue is None or len(object_balls) == 0 or len(pockets) == 0:
-            frame = self.menu.draw(frame)
-            return frame
+            return self.menu.draw(frame)
 
         cue = (int(cue[0]), int(cue[1]))
 
@@ -59,14 +83,19 @@ class ProToolOrchestrator:
                 key=lambda b: np.hypot(b[0] - mouse[0], b[1] - mouse[1])
             )
 
-        target = self.locked_target if self.locked_target else object_balls[0]
+        # ================= AUTO TARGET RANKING =================
+        if self.locked_target:
+            target = self.locked_target
+        else:
+            target = self.select_best_target(
+                cue,
+                object_balls,
+                pockets[self.selected_pocket]
+            )
+
         target = (int(target[0]), int(target[1]))
 
-        # ================= POCKET SELECT =================
-        pocket_key = self.controller.get_active_pocket_by_hotkey()
-        if pocket_key:
-            self.selected_pocket = pocket_key - 1
-
+        # ================= POCKET =================
         pocket = pockets[self.selected_pocket]
         pocket = (int(pocket[0]), int(pocket[1]))
 
@@ -91,7 +120,6 @@ class ProToolOrchestrator:
         )
 
         # ================= RENDER =================
-
         frame = self.drawer.draw_detected_table(frame, detections)
 
         frame = self.drawer.draw_trajectory(frame, [cue, target], "cue_line", 2)
@@ -117,18 +145,16 @@ class ProToolOrchestrator:
         cv2.imwrite(output_path, result)
         print(f"[OK] Saved → {output_path}")
 
-    # ================= LIVE OVERLAY MODE =================
+    # ================= LIVE MODE =================
     def run_live(self):
 
         if self.is_ci:
-            print("CI mode active - overlay disabled")
+            print("CI mode active")
             return
 
         import pyautogui
 
         cv2.namedWindow("AI_OVERLAY", cv2.WINDOW_NORMAL)
-
-        # make overlay transparent & topmost
         cv2.setWindowProperty("AI_OVERLAY", cv2.WND_PROP_TOPMOST, 1)
 
         while True:
@@ -145,7 +171,6 @@ class ProToolOrchestrator:
             cv2.putText(output, f"FPS: {int(fps)}", (30, 40),
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
-            # 🚀 TRANSPARENT OVERLAY DISPLAY
             self.overlay.show(output)
 
             if cv2.waitKey(1) & 0xFF == 27:
@@ -154,7 +179,7 @@ class ProToolOrchestrator:
         cv2.destroyAllWindows()
 
 
-# ================= ENTRY POINT =================
+# ================= ENTRY =================
 if __name__ == "__main__":
 
     if len(sys.argv) > 1 and sys.argv[1] == "--ci":
@@ -164,4 +189,3 @@ if __name__ == "__main__":
         )
     else:
         ProToolOrchestrator().run_live()
-        # test github desktop  
